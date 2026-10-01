@@ -102,6 +102,7 @@ def check_watch(watch: WatchSource, db: Session):
                 why_it_matters=semantic_analysis.why_it_matters,
                 entities=semantic_analysis.entities,
                 importance=semantic_analysis.importance,
+                change_type=semantic_analysis.change_type,
             )
 
         snapshot = WatchSnapshot(

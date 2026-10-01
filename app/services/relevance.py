@@ -59,6 +59,7 @@ def assess_relevance(
     why_it_matters: str,
     entities: list[str],
     importance: str,
+    change_type: str,
 ) -> dict:
     if profile is None:
         return {
@@ -67,10 +68,9 @@ def assess_relevance(
             "priority": "ignore",
         }
 
-    content = " ".join(
-        [category, summary, why_it_matters, *entities]
-    )
+    content = " ".join([summary, why_it_matters, *entities])
     normalized_content = _normalize(content)
+    normalized_category = _normalize(category)
     reasons = []
     score = 0
 
@@ -104,6 +104,23 @@ def assess_relevance(
         if salary_match:
             score += 15
             reasons.append("Salary matches your preferred range.")
+
+    category_matches = [
+        value
+        for value in profile.preferred_categories
+        if _matches_term(value, normalized_category)
+    ]
+    if category_matches:
+        reasons.extend(
+            f"Matches preferred category: {value}"
+            for value in category_matches
+        )
+        if score:
+            score += 5
+
+    if score and change_type in {"deadline", "eligibility", "requirement"}:
+        score += 5
+        reasons.append(f"Includes an actionable {change_type} update.")
 
     if not reasons:
         reasons.append("No profile preferences matched this change.")

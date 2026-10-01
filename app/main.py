@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from app.database import Base, engine
+from app.migrations import upgrade_schema
 from app.models import WatchSource
 from app.api.watches import router as watches_router
 from app.api.changes import router as changes_router
@@ -8,6 +9,7 @@ from app.api.profile import router as profile_router
 from app.services.scheduler import start_scheduler
 
 Base.metadata.create_all(bind=engine)
+upgrade_schema()
 
 
 app = FastAPI(

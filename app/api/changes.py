@@ -33,6 +33,7 @@ def get_changes(
             why_it_matters=change.why_it_matters,
             entities=change.entities,
             importance=change.importance,
+            change_type=change.change_type,
         )
         results.append({
             "id": change.id,

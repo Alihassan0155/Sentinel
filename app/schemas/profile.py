@@ -7,6 +7,7 @@ class ProfileUpdate(BaseModel):
     interests: list[str] = Field(default_factory=list)
     desired_roles: list[str] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
+    preferred_categories: list[str] = Field(default_factory=list)
     salary_min: int | None = Field(
         default=None,
         gt=0,

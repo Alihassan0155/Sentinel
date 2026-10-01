@@ -14,5 +14,10 @@ class UserProfile(Base):
     interests: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
     desired_roles: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
     locations: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    preferred_categories: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        nullable=False,
+    )
     salary_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     salary_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
