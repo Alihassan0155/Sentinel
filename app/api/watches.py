@@ -10,7 +10,10 @@ from app.services.monitor import check_watch as run_watch_check
 from app.services.scheduler import schedule_watch
 from app.services.semantic import analyze_change
 
-from app.models import WatchChange, WatchSnapshot, WatchSource, snapshot, watch
+from app.models import Recommendation, UserProfile, WatchChange, WatchSnapshot, WatchSource, snapshot, watch
+from app.services.memory import finding_text, relevant_context, remember
+from app.services.relevance import assess_relevance
+from app.services.recommendation import recommend
 
 router = APIRouter(
     prefix="/watches",
@@ -111,6 +114,11 @@ Eligibility: Bachelor's degree in Computer Science or related field.
         removed=change_data["removed"],
         replaced=change_data["replaced"],
     )
+    profile = db.get(UserProfile, 1)
+    memories = relevant_context(db, finding_text(
+        watch.category, semantic_analysis.summary,
+        semantic_analysis.why_it_matters, semantic_analysis.entities,
+    ))
 
     snapshot = WatchSnapshot(
         watch_source_id=watch.id,
@@ -135,12 +143,35 @@ Eligibility: Bachelor's degree in Computer Science or related field.
     )
 
     db.add(change)
+    db.flush()
+    relevance = assess_relevance(
+        profile, category=watch.category, summary=change.summary,
+        why_it_matters=change.why_it_matters, entities=change.entities,
+        importance=change.importance, change_type=change.change_type,
+        memories=memories,
+    )
+    recommendation = recommend(profile=profile, relevance=relevance, memories=memories)
+    db.add(Recommendation(watch_change_id=change.id, **recommendation))
     db.commit()
+
+    try:
+        remember(
+            db, kind="finding", source_key=f"finding:change:{change.id}",
+            source_url=watch.url,
+            content=finding_text(watch.category, change.summary,
+                                 change.why_it_matters, change.entities),
+            metadata={"change_id": change.id, "watch_id": watch.id},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
 
     return {
         "watch_id": watch.id,
         "changed": True,
         "change": semantic_analysis.model_dump(),
+        "recommendation": recommendation,
+        **relevance,
         "added": change_data["added"],
         "removed": change_data["removed"],
         "replaced": change_data["replaced"],

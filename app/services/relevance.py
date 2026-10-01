@@ -60,6 +60,7 @@ def assess_relevance(
     entities: list[str],
     importance: str,
     change_type: str,
+    memories: list[dict] | None = None,
 ) -> dict:
     if profile is None:
         return {
@@ -122,10 +123,24 @@ def assess_relevance(
         score += 5
         reasons.append(f"Includes an actionable {change_type} update.")
 
+    # Explicit user decisions carry more weight than similar past findings.
+    feedback = [
+        memory for memory in (memories or [])
+        if memory["kind"] == "decision" and memory["similarity"] >= 0.78
+    ]
+    if feedback:
+        decision = feedback[0]["metadata"].get("decision")
+        if decision in {"interested", "saved", "applied"}:
+            score += 15
+            reasons.append("Similar to a finding you previously valued.")
+        elif decision in {"dismissed", "irrelevant"}:
+            score -= 15
+            reasons.append("Similar to a finding you previously dismissed.")
+
     if not reasons:
         reasons.append("No profile preferences matched this change.")
 
-    score = min(score, 100)
+    score = max(0, min(score, 100))
     if score >= 85 and importance == "critical":
         priority = "critical"
     elif score >= 60:
@@ -142,3 +157,14 @@ def assess_relevance(
         "reasons": reasons,
         "priority": priority,
     }
+
+
+def qualifies_for_investigation(
+    relevance_score: int,
+    priority: str,
+    threshold: int,
+) -> bool:
+    return (
+        relevance_score >= threshold
+        and priority in {"medium", "high", "critical"}
+    )

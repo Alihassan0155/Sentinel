@@ -6,6 +6,7 @@ from app.models import WatchSource
 from app.api.watches import router as watches_router
 from app.api.changes import router as changes_router
 from app.api.profile import router as profile_router
+from app.api.memory import router as memory_router
 from app.services.scheduler import start_scheduler
 
 Base.metadata.create_all(bind=engine)
@@ -21,6 +22,7 @@ app = FastAPI(
 app.include_router(watches_router)
 app.include_router(changes_router)
 app.include_router(profile_router)
+app.include_router(memory_router)
 start_scheduler()
 
 @app.get("/")
