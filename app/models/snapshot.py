@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -8,6 +8,9 @@ from app.database import Base
 
 class WatchSnapshot(Base):
     __tablename__ = "watch_snapshots"
+    __table_args__ = (
+        Index("ix_watch_snapshots_source_hash", "watch_source_id", "content_hash"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 

@@ -1,8 +1,12 @@
+from app.api.auth import current_account
+from app.models.auth import Account
+from app.services.ownership import profile_for
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Investigation, Recommendation, UserProfile, WatchChange, WatchSource
+from app.models import ActionStep, Investigation, Notification, Recommendation, UserProfile, WatchChange, WatchSource
+from app.api.actions import serialize_step
 from app.services.relevance import assess_relevance
 from app.services.recommendation import recommend
 
@@ -15,15 +19,16 @@ router = APIRouter(
 
 @router.get("")
 def get_changes(
-    db: Session = Depends(get_db),
+    account: Account = Depends(current_account), db: Session = Depends(get_db),
 ):
     changes = (
         db.query(WatchChange, WatchSource.category)
         .join(WatchSource, WatchSource.id == WatchChange.watch_source_id)
+        .filter(WatchSource.account_id == account.id)
         .order_by(WatchChange.detected_at.desc())
         .all()
     )
-    profile = db.get(UserProfile, 1)
+    profile = profile_for(db, account.id)
     change_ids = [change.id for change, _ in changes]
     investigations = (
         db.query(Investigation)
@@ -45,6 +50,20 @@ def get_changes(
     recommendation_by_change = {
         item.watch_change_id: item for item in recommendations
     }
+    action_steps = (
+        db.query(ActionStep)
+        .filter(ActionStep.watch_change_id.in_(change_ids))
+        .order_by(ActionStep.position).all()
+        if change_ids else []
+    )
+    actions_by_change: dict[int, list] = {}
+    for step in action_steps:
+        actions_by_change.setdefault(step.watch_change_id, []).append(serialize_step(step))
+    notifications = (
+        db.query(Notification).filter(Notification.watch_change_id.in_(change_ids)).all()
+        if change_ids else []
+    )
+    notification_by_change = {item.watch_change_id: item for item in notifications}
 
     results = []
     for change, category in changes:
@@ -82,9 +101,18 @@ def get_changes(
             "summary": change.summary,
             "why_it_matters": change.why_it_matters,
             "should_notify": (
-                change.should_notify and recommendation["recommendation"] == "recommended"
+                change.should_notify
+                and change.id in notification_by_change
+                and notification_by_change[change.id].status in {"pending", "sent"}
             ),
             "recommendation": recommendation,
+            "actions": actions_by_change.get(change.id, []),
+            "notification": (
+                {"id": notification_by_change[change.id].id,
+                 "status": notification_by_change[change.id].status,
+                 "reason": notification_by_change[change.id].reason}
+                if change.id in notification_by_change else None
+            ),
             "entities": change.entities,
             "detected_at": change.detected_at,
             "investigation": (

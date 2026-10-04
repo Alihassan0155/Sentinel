@@ -4,9 +4,9 @@ from pydantic import BaseModel, Field, HttpUrl
 
 
 class WatchCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=255)
     url: HttpUrl
-    category: str
+    category: str = Field(min_length=1, max_length=100)
     check_interval_minutes: int = Field(
         default=30,
         ge=1,

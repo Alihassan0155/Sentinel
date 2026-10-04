@@ -8,13 +8,16 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.models import UserProfile, WatchChange
+from app.config import settings
+from app.services.browser import needs_browser, render_page
+from app.services.network import get_page, website_client
+from app.services.llm import generate
 from app.schemas.investigation import (
     EvidenceFact,
     InvestigationDraft,
     InvestigationResult,
     InvestigationSource,
 )
-from app.services.semantic import MODEL, client
 
 
 logger = logging.getLogger(__name__)
@@ -119,29 +122,11 @@ def _clean_page(response: httpx.Response, source_type: str) -> EvidencePage:
 
 
 def _needs_browser(html: str, page: EvidencePage) -> bool:
-    soup = BeautifulSoup(html, "html.parser")
-    has_app_root = soup.find(id=re.compile(r"^(root|app)$", re.IGNORECASE))
-    return len(page.content) < 1000 and bool(soup.find_all("script")) and (
-        len(soup.find_all("script")) >= 2 or has_app_root is not None
-    )
+    return needs_browser(html, page.content)
 
 
 def _render_page(url: str) -> tuple[str, str]:
-    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        try:
-            page = browser.new_page(user_agent=USER_AGENT)
-            page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=4000)
-            except PlaywrightTimeoutError:
-                pass
-            return page.url, page.content()
-        finally:
-            browser.close()
+    return render_page(url, USER_AGENT)
 
 
 def _fetch_evidence_page(
@@ -149,8 +134,7 @@ def _fetch_evidence_page(
     url: str,
     source_type: str,
 ) -> tuple[str, EvidencePage]:
-    response = http.get(url)
-    response.raise_for_status()
+    response = get_page(http, url)
     html = response.text
     page = _clean_page(response, source_type)
 
@@ -214,11 +198,7 @@ def collect_evidence(
     questions: list[str],
 ) -> list[EvidencePage]:
     pages = []
-    with httpx.Client(
-        timeout=15.0,
-        follow_redirects=True,
-        headers={"User-Agent": USER_AGENT},
-    ) as http:
+    with website_client() as http:
         original_html, original_page = _fetch_evidence_page(
             http,
             original_url,
@@ -255,8 +235,7 @@ def collect_evidence(
                 else "details"
             )
             try:
-                response = http.get(href)
-                response.raise_for_status()
+                response = get_page(http, href)
                 content_type = response.headers.get("content-type", "")
                 if "html" not in content_type.lower():
                     continue
@@ -272,7 +251,7 @@ def collect_evidence(
                         text=rendered_html,
                     )
                 pages.append(_clean_page(response, source_type))
-            except httpx.HTTPError:
+            except (httpx.HTTPError, RuntimeError, ValueError):
                 logger.warning("Could not fetch investigation link %s", href, exc_info=True)
 
     return pages
@@ -429,9 +408,10 @@ Rules:
 - Keep values concise. Do not return facts without a supporting quote and source URL.
 """
 
-    response = client.models.generate_content(
-        model=MODEL,
+    response = generate(
+        model=settings.gemini_model,
         contents=prompt,
+        operation="investigation",
         config={
             "response_mime_type": "application/json",
             "response_schema": InvestigationDraft,

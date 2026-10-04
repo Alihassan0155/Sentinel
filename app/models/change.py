@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -9,6 +9,10 @@ from app.database import Base
 
 class WatchChange(Base):
     __tablename__ = "watch_changes"
+    __table_args__ = (
+        Index("uq_watch_changes_source_hash", "watch_source_id", "content_hash",
+              unique=True, postgresql_where=text("content_hash IS NOT NULL")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
@@ -21,6 +25,8 @@ class WatchChange(Base):
         ForeignKey("watch_snapshots.id"),
         nullable=False,
     )
+
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     importance: Mapped[str] = mapped_column(
         String(20),

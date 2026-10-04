@@ -2,3 +2,8 @@
 .env
 __pycache__/
 *.pyc
+node_modules/
+.next/
+frontend/.env*
+!frontend/.env.example
+*.tsbuildinfo

@@ -1,19 +1,16 @@
-import hashlib
-
-from fastapi import APIRouter, Depends, HTTPException
+from app.api.auth import current_account
+from app.models.auth import Account
+from app.services.ownership import owned_watch
+from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas.watch import WatchCreate, WatchResponse
-from app.services.diff import detect_changes
-from app.services.monitor import check_watch as run_watch_check
-from app.services.scheduler import schedule_watch
-from app.services.semantic import analyze_change
+from app.services.check_jobs import enqueue_check
 
-from app.models import Recommendation, UserProfile, WatchChange, WatchSnapshot, WatchSource, snapshot, watch
-from app.services.memory import finding_text, relevant_context, remember
-from app.services.relevance import assess_relevance
-from app.services.recommendation import recommend
+from app.models import CheckJob, WatchSnapshot, WatchSource
 
 router = APIRouter(
     prefix="/watches",
@@ -24,9 +21,10 @@ router = APIRouter(
 @router.post("", response_model=WatchResponse)
 def create_watch(
     watch: WatchCreate,
-    db: Session = Depends(get_db),
+    account: Account = Depends(current_account), db: Session = Depends(get_db),
 ):
     source = WatchSource(
+        account_id=account.id,
         name=watch.name,
         url=str(watch.url),
         category=watch.category,
@@ -34,27 +32,31 @@ def create_watch(
     )
 
     db.add(source)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "This URL is already being monitored")
     db.refresh(source)
     if source.active:
-        schedule_watch(source)
+        enqueue_check(db, source.id)
 
     return source
 
 
 @router.get("", response_model=list[WatchResponse])
 def get_watches(
-    db: Session = Depends(get_db),
+    account: Account = Depends(current_account), db: Session = Depends(get_db),
 ):
-    return db.query(WatchSource).all()
+    return db.query(WatchSource).filter(WatchSource.account_id == account.id).all()
 
 
-@router.post("/{watch_id}/check")
+@router.post("/{watch_id}/check", status_code=status.HTTP_202_ACCEPTED)
 def check_watch_endpoint(
     watch_id: int,
-    db: Session = Depends(get_db),
+    account: Account = Depends(current_account), db: Session = Depends(get_db),
 ):
-    watch = db.get(WatchSource, watch_id)
+    watch = owned_watch(db, watch_id, account.id)
 
     if not watch:
         raise HTTPException(
@@ -62,14 +64,30 @@ def check_watch_endpoint(
             detail="Watch not found",
         )
 
-    return run_watch_check(watch, db)
+    job = enqueue_check(db, watch.id)
+    return {"job_id": job.id, "status": job.status, "watch_id": watch.id}
 
-@router.post("/{watch_id}/test-change")
+@router.get("/check-jobs/{job_id}")
+def get_check_job(job_id: int, account: Account = Depends(current_account), db: Session = Depends(get_db)):
+    job = (db.query(CheckJob).join(WatchSource, WatchSource.id == CheckJob.watch_source_id)
+           .filter(CheckJob.id == job_id, WatchSource.account_id == account.id).first())
+    if job is None:
+        raise HTTPException(404, "Check job not found")
+    return {
+        "job_id": job.id, "watch_id": job.watch_source_id,
+        "mode": job.mode, "status": job.status,
+        "attempts": job.attempts, "error": job.error,
+        "result": job.result, "created_at": job.created_at,
+        "started_at": job.started_at, "finished_at": job.finished_at,
+    }
+
+
+@router.post("/{watch_id}/test-change", status_code=status.HTTP_202_ACCEPTED)
 def test_change(
     watch_id: int,
-    db: Session = Depends(get_db),
+    account: Account = Depends(current_account), db: Session = Depends(get_db),
 ):
-    watch = db.get(WatchSource, watch_id)
+    watch = owned_watch(db, watch_id, account.id)
 
     if not watch:
         raise HTTPException(
@@ -94,85 +112,22 @@ def test_change(
             detail="Create a normal snapshot first.",
         )
 
-    # Simulated website update
-    new_content = previous_snapshot.content_text + """
-NEW JOB POSTING
-Position: AI/ML Engineer
-Deadline: October 15, 2026
-Eligibility: Bachelor's degree in Computer Science or related field.
-"""
+    job = enqueue_check(db, watch.id, mode="test_change")
+    return {"job_id": job.id, "status": job.status, "watch_id": watch.id}
 
-    change_data = detect_changes(
-        previous_snapshot.content_text,
-        new_content,
-    )
 
-    semantic_analysis = analyze_change(
-        source_name=watch.name,
-        category=watch.category,
-        added=change_data["added"],
-        removed=change_data["removed"],
-        replaced=change_data["replaced"],
-    )
-    profile = db.get(UserProfile, 1)
-    memories = relevant_context(db, finding_text(
-        watch.category, semantic_analysis.summary,
-        semantic_analysis.why_it_matters, semantic_analysis.entities,
-    ))
+class WatchUpdate(BaseModel):
+    active: bool
 
-    snapshot = WatchSnapshot(
-        watch_source_id=watch.id,
-        content_hash=hashlib.sha256(
-            new_content.encode("utf-8")
-        ).hexdigest(),
-        content_text=new_content,
-    )
 
-    db.add(snapshot)
-    db.flush()
-
-    change = WatchChange(
-        watch_source_id=watch.id,
-        snapshot_id=snapshot.id,
-        importance=semantic_analysis.importance,
-        change_type=semantic_analysis.change_type,
-        summary=semantic_analysis.summary,
-        why_it_matters=semantic_analysis.why_it_matters,
-        should_notify=semantic_analysis.should_notify,
-        entities=semantic_analysis.entities,
-    )
-
-    db.add(change)
-    db.flush()
-    relevance = assess_relevance(
-        profile, category=watch.category, summary=change.summary,
-        why_it_matters=change.why_it_matters, entities=change.entities,
-        importance=change.importance, change_type=change.change_type,
-        memories=memories,
-    )
-    recommendation = recommend(profile=profile, relevance=relevance, memories=memories)
-    db.add(Recommendation(watch_change_id=change.id, **recommendation))
+@router.patch("/{watch_id}", response_model=WatchResponse)
+def update_watch(watch_id: int, update: WatchUpdate, account: Account = Depends(current_account), db: Session = Depends(get_db)):
+    watch = owned_watch(db, watch_id, account.id)
+    if watch is None:
+        raise HTTPException(404, "Watch not found")
+    watch.active = update.active
     db.commit()
-
-    try:
-        remember(
-            db, kind="finding", source_key=f"finding:change:{change.id}",
-            source_url=watch.url,
-            content=finding_text(watch.category, change.summary,
-                                 change.why_it_matters, change.entities),
-            metadata={"change_id": change.id, "watch_id": watch.id},
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-
-    return {
-        "watch_id": watch.id,
-        "changed": True,
-        "change": semantic_analysis.model_dump(),
-        "recommendation": recommendation,
-        **relevance,
-        "added": change_data["added"],
-        "removed": change_data["removed"],
-        "replaced": change_data["replaced"],
-    }
+    db.refresh(watch)
+    if watch.active:
+        enqueue_check(db, watch.id)
+    return watch

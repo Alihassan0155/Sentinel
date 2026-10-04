@@ -1,13 +1,9 @@
-from google import genai
 from pydantic import BaseModel, Field
 from typing import Literal
 
 from app.config import settings
+from app.services.llm import generate
 
-
-client = genai.Client(
-    api_key=settings.gemini_api_key
-)
 
 MODEL = settings.gemini_model
 
@@ -67,9 +63,10 @@ REPLACED:
 {replaced}
 """
 
-    response = client.models.generate_content(
+    response = generate(
         model=MODEL,
         contents=prompt,
+        operation="semantic_analysis",
         config={
             "response_mime_type": "application/json",
             "response_schema": ChangeAnalysis,
